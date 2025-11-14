@@ -50,6 +50,15 @@ class PipelineOptions:
     centroid_mag_filter: int = 0
     # fname to output attitude estimates to
     print_attitude: str = "attitude.txt"
+    # Field-of-view in degrees (optional). If provided, the pipeline will be
+    # invoked with a --fov <deg> argument. If None, the pipeline default is used.
+    fov_deg: float | None = None
+    # Optional outputs for intermediate stages (centroiding, star-id)
+    # If set, these will be passed directly to the LOST CLI and written
+    # inside the `lost` directory.
+    print_input_centroids: str | None = None
+    print_actual_centroids: str | None = None
+    compare_star_ids: str | None = None
 
 
 @dataclass
@@ -212,6 +221,21 @@ def run_entire_pipeline(options: PipelineOptions) -> bool:
             "--generate-roll", str(options.generate_roll)
         ]
 
+    # If a field-of-view (degrees) was provided, append it to the pipeline
+    # invocation. The LOST binary is expected to accept a `--fov <deg>` flag.
+    # If the binary does not support this flag, callers can ignore fov_deg or
+    # the flag will simply be unused by the underlying CLI.
+    if options.fov_deg is not None:
+        cmd += ["--fov", str(options.fov_deg)]
+
+    # Optional intermediate outputs
+    if getattr(options, "print_input_centroids", None):
+        cmd += ["--print-input-centroids", options.print_input_centroids]
+    if getattr(options, "print_actual_centroids", None):
+        cmd += ["--print-actual-centroids", options.print_actual_centroids]
+    if getattr(options, "compare_star_ids", None):
+        cmd += ["--compare-star-ids", options.compare_star_ids]
+
     try:
         result = subprocess.run(
             cmd,
@@ -257,6 +281,122 @@ def parse_attitude_result(attitude_fname: str) -> AttitudeResult | None:
     except Exception as e:
         print(f"Error parsing attitude result: {e}")
         return None
+
+
+def compute_cross_boresight_accuracy(
+    fov_deg: float,
+    avg_centroid_accuracy: float,
+    num_pixels: int,
+    avg_detected_stars: float,
+) -> float:
+    """Compute the cross-boresight accuracy metric.
+
+    Formula:
+        E_cross_boresight = (A * E_centroid) / (N_pixel * sqrt(N_star))
+
+    Where:
+        A = FOV (field-of-view in degrees)
+        E_centroid = average centroiding accuracy (pixels)
+        N_pixel = total number of pixels in the image (width * height)
+        N_star = average number of detected stars
+
+    Args:
+        fov_deg: field-of-view in degrees (A).
+        avg_centroid_accuracy: average centroiding accuracy in pixels (E_centroid).
+        num_pixels: total number of pixels in the image, width * height (N_pixel).
+        avg_detected_stars: average number of detected stars (N_star, can be fractional if averaged).
+
+    Returns:
+        The cross-boresight accuracy as a float.
+
+    Raises:
+        ValueError: if any input is non-positive where a positive value is required.
+
+    Notes:
+        - The function assumes numeric inputs. It will raise on zero/negative values for
+          `num_pixels` or `avg_detected_stars` because those would make the denominator
+          zero or undefined.
+    """
+    # Validate inputs
+    if fov_deg is None:
+        raise ValueError("fov_deg must be provided and positive")
+    if avg_centroid_accuracy is None:
+        raise ValueError("avg_centroid_accuracy must be provided")
+    try:
+        fov = float(fov_deg)
+        avg_cent = float(avg_centroid_accuracy)
+        pixels = int(num_pixels)
+        avg_stars = float(avg_detected_stars)
+    except Exception as e:
+        raise ValueError(f"Invalid input types: {e}")
+
+    if pixels <= 0:
+        raise ValueError("num_pixels must be > 0")
+    if avg_stars <= 0:
+        raise ValueError("avg_detected_stars must be > 0")
+
+    # Compute denominator: num_pixels * sqrt(avg_detected_stars)
+    import math
+
+    denom = pixels * math.sqrt(avg_stars)
+    result = fov * (avg_cent) / denom
+    return float(result)
+
+
+def compute_around_boresight_accuracy(
+    avg_centroid_accuracy: float,
+    num_pixels: int,
+    avg_detected_stars: float,
+) -> float:
+    """Compute the around-boresight (roll) accuracy metric.
+
+    Formula:
+        E_roll = atan( E_centroid / (0.3825 * N_pixel) ) * (1 / sqrt(N_star))
+
+    Where:
+        E_centroid: average centroiding accuracy (pixels)
+        N_pixel: total number of pixels in the image (width * height)
+        N_star: average number of detected stars
+
+    Args:
+        avg_centroid_accuracy: average centroiding accuracy in pixels.
+        num_pixels: total number of pixels in the image (width * height).
+        avg_detected_stars: average number of detected stars (can be fractional if averaged).
+
+    Returns:
+        The around-boresight roll error in radians as a float.
+
+    Raises:
+        ValueError: if any input is invalid or non-positive where required.
+
+    Notes:
+        - The result is in radians. To convert to degrees: result * 180 / math.pi
+        - To convert to arcseconds: result * 206265 (radians to arcseconds)
+        - The constant 0.3825 is empirically determined for the camera/optics system.
+    """
+    import math
+
+    # Validate inputs
+    if avg_centroid_accuracy is None:
+        raise ValueError("avg_centroid_accuracy must be provided")
+    try:
+        avg_cent = float(avg_centroid_accuracy)
+        pixels = int(num_pixels)
+        avg_stars = float(avg_detected_stars)
+    except Exception as e:
+        raise ValueError(f"Invalid input types: {e}")
+
+    if pixels <= 0:
+        raise ValueError("num_pixels must be > 0")
+    if avg_stars <= 0:
+        raise ValueError("avg_detected_stars must be > 0")
+
+    # Compute: atan( E_centroid / (0.3825 * N_pixel) ) * (1 / sqrt(N_star))
+    numerator = avg_cent / (0.3825 * pixels)
+    atan_term = math.atan(numerator)
+    result = atan_term * (1.0 / math.sqrt(avg_stars))
+
+    return float(result)
 
 # Internal helpers, not meant for use outside this module
 

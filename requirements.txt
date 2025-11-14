@@ -1,1 +1,2 @@
 tqdm==4.67.1
+matplotlib>=3.0.0
