@@ -1,8 +1,9 @@
-import subprocess
 import os
-from dataclasses import dataclass
+import subprocess
 import threading
 import time
+from dataclasses import dataclass
+
 from tqdm import tqdm
 
 """
@@ -39,6 +40,8 @@ class PipelineOptions:
     # Exposure time (seconds)
     generate_exposure: float = 0.6
     generate_random_attitudes: bool = True
+    fov: float = 20
+    # Pipeline parameters
     centroid_algo: str = "cog"
     database: str = "tetra.dat"
     false_stars: int = 0
@@ -71,7 +74,7 @@ def clean_lost() -> bool:
             cwd=lost_dir,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            check=True
+            check=True,
         )
         if result.returncode != 0:
             print(f"'make clean' failed with return code {result.returncode}")
@@ -101,7 +104,12 @@ def compile_lost(options: CompileOptions | None) -> bool:
         if options.rebuild and not clean_lost():
             return False
 
-        with tqdm(total=1, desc="Compiling LOST...", bar_format="{desc} {bar} {elapsed}", ncols=60) as pbar:
+        with tqdm(
+            total=1,
+            desc="Compiling LOST...",
+            bar_format="{desc} {bar} {elapsed}",
+            ncols=60,
+        ) as pbar:
             # Start a background thread to animate the bar
             stop_spinner = False
 
@@ -118,7 +126,7 @@ def compile_lost(options: CompileOptions | None) -> bool:
                 cwd=lost_dir,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                check=True
+                check=True,
             )
 
             stop_spinner = True
@@ -155,21 +163,18 @@ def generate_tetra_database(options: TetraDbOptions) -> bool:
     lost_dir = _get_lost_dir()
     output_path = os.path.join(lost_dir, options.output)
     cmd = [
-        "./lost", "database",
+        "./lost",
+        "database",
         "--min-mag", str(options.min_mag),
         "--tetra",
         "--tetra-max-angle", str(options.tetra_max_angle),
-        "--output", options.output
+        "--output",
+        options.output,
     ]
     try:
-        result = subprocess.run(
-            cmd,
-            cwd=lost_dir,
-            check=True
-        )
+        result = subprocess.run(cmd, cwd=lost_dir, check=True)
         if result.returncode != 0:
-            print(
-                f"Database generation failed with return code {result.returncode}")
+            print(f"Database generation failed with return code {result.returncode}")
             return False
         return os.path.isfile(output_path)
     except subprocess.CalledProcessError as e:
@@ -184,15 +189,21 @@ def run_entire_pipeline(options: PipelineOptions) -> bool:
     lost_dir = _get_lost_dir()
 
     # Either use random attitude or all of ra, de, roll must be provided
-    if not options.generate_random_attitudes and not all(v is not None for v in [options.generate_ra, options.generate_de, options.generate_roll]):
+    if not options.generate_random_attitudes and not all(
+        v is not None
+        for v in [options.generate_ra, options.generate_de, options.generate_roll]
+    ):
         print(
-            "Error: Must specify RA, DE, and ROLL when generate_random_attitudes is False.")
+            "Error: Must specify RA, DE, and ROLL when generate_random_attitudes is False."
+        )
         return False
 
     cmd = [
-        "./lost", "pipeline",
+        "./lost",
+        "pipeline",
         "--generate", str(options.generate),
         "--generate-exposure", str(options.generate_exposure),
+        "--fov", str(options.fov),
         "--centroid-algo", options.centroid_algo,
         "--database", options.database,
         "--false-stars", str(options.false_stars),
@@ -200,7 +211,8 @@ def run_entire_pipeline(options: PipelineOptions) -> bool:
         "--attitude-algo", options.attitude_algo,
         "--centroid-mag-filter", str(options.centroid_mag_filter),
         "--print-attitude", options.print_attitude,
-        "--plot-input", "input-foo-zeddie-test.png"
+        "--plot-input", "input-foo-test.png",
+        "--plot-raw-input", "raw-input-foo-test.png",
     ]
 
     if options.generate_random_attitudes:
@@ -209,7 +221,7 @@ def run_entire_pipeline(options: PipelineOptions) -> bool:
         cmd += [
             "--generate-ra", str(options.generate_ra),
             "--generate-de", str(options.generate_de),
-            "--generate-roll", str(options.generate_roll)
+            "--generate-roll", str(options.generate_roll),
         ]
 
     try:
@@ -258,6 +270,7 @@ def parse_attitude_result(attitude_fname: str) -> AttitudeResult | None:
         print(f"Error parsing attitude result: {e}")
         return None
 
+
 # Internal helpers, not meant for use outside this module
 
 
@@ -267,5 +280,6 @@ def _get_lost_dir() -> str:
     lost_dir = os.path.join(project_root, "lost")
     if not os.path.isdir(lost_dir):
         raise FileNotFoundError(
-            f"LOST directory not found at expected location: {lost_dir}")
+            f"LOST directory not found at expected location: {lost_dir}"
+        )
     return lost_dir
