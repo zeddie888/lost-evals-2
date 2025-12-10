@@ -1,46 +1,46 @@
-import inspect
 import sys
+import inspect
 
 from lost_api import CompileOptions
 
 
 def test_compile_lost():
     from lost_api import compile_lost
-
-    options = CompileOptions(rebuild=False)
+    options = CompileOptions(
+        rebuild=False
+    )
     compile_lost(options)
 
 
 def test_clean_lost():
     from lost_api import clean_lost
-
     clean_lost()
 
 
 def test_generate_tetra_database():
     from lost_api import generate_tetra_database, TetraDbOptions
-
-    # NOTE: change this to match your image FOV
-    options = TetraDbOptions(min_mag=7, tetra_max_angle=20, output="tetra-20.dat")
+    options = TetraDbOptions(
+        min_mag=7,
+        tetra_max_angle=20,
+        output="tetra-20.dat"
+    )
     generate_tetra_database(options)
 
 
 def test_run_entire_pipeline_random_attitude():
-    from lost_api import parse_attitude_result, PipelineOptions, run_entire_pipeline
-
+    from lost_api import run_entire_pipeline, parse_attitude_result, PipelineOptions
     attitude_output_fname = "attitude.txt"
     options = PipelineOptions(
         generate=1,
         generate_random_attitudes=True,
-        generate_exposure=1,
-        fov=20,
+        generate_exposure=0.6,
         centroid_algo="cog",
         database="tetra-20.dat",
         false_stars=0,
         star_id_algo="tetra",
         attitude_algo="dqm",
         centroid_mag_filter=0,
-        print_attitude=attitude_output_fname,
+        print_attitude=attitude_output_fname
     )
     run_entire_pipeline(options)
     print(parse_attitude_result(attitude_output_fname))
@@ -55,8 +55,54 @@ def test_run_entire_pipeline_given_attitude(
         roll = float(roll_input)
     except ValueError:
         raise ValueError("ra, de, and roll must be convertible to float")
-    from lost_api import parse_attitude_result, PipelineOptions, run_entire_pipeline
+    from lost_api import run_entire_pipeline, PipelineOptions
+    options = PipelineOptions(
+        generate=1,
+        generate_ra=ra,
+        generate_de=de,
+        generate_roll=roll,
+        generate_random_attitudes=False,
+        generate_exposure=0.6,
+        centroid_algo="cog",
+        database="tetra-20.dat",
+        false_stars=0,
+        star_id_algo="tetra",
+        attitude_algo="dqm",
+        centroid_mag_filter=0,
+        print_attitude="attitude.txt"
+    )
+    run_entire_pipeline(options)
 
+from lost_api import CentroidResult
+def test_run_centroiding_random_attitude() -> CentroidResult:
+    from lost_api import run_entire_pipeline_C, parse_attitude_result, PipelineOptions
+    attitude_output_fname = "attitude.txt"
+    options = PipelineOptions(
+        generate=1,
+        generate_random_attitudes=True,
+        generate_exposure=0.6,
+        centroid_algo="cog",
+        database="tetra-20.dat",
+        false_stars=0,
+        star_id_algo="tetra",
+        attitude_algo="dqm",
+        centroid_mag_filter=0,
+        print_attitude=attitude_output_fname,
+        centroid_compare_threshold = 2
+    )
+    ret = run_entire_pipeline_C(options)
+    print(ret)
+    print(parse_attitude_result(attitude_output_fname))
+    return ret
+
+def test_run_centroiding_given_attitude(ra_input: str | float, de_input: str | float, roll_input: str | float) -> CentroidResult:
+    try:
+        ra = float(ra_input)
+        de = float(de_input)
+        roll = float(roll_input)
+    except ValueError:
+        raise ValueError("ra, de, and roll must be convertible to float")
+    from lost_api import run_entire_pipeline_C, parse_attitude_result, PipelineOptions
     attitude_output_fname = "attitude.txt"
     options = PipelineOptions(
         generate=1,
@@ -64,8 +110,7 @@ def test_run_entire_pipeline_given_attitude(
         generate_de=de,
         generate_roll=roll,
         generate_random_attitudes=False,
-        generate_exposure=1,
-        fov=20,
+        generate_exposure=0.6,
         centroid_algo="cog",
         database="tetra-20.dat",
         false_stars=0,
@@ -73,26 +118,21 @@ def test_run_entire_pipeline_given_attitude(
         attitude_algo="dqm",
         centroid_mag_filter=0,
         print_attitude=attitude_output_fname,
+        centroid_compare_threshold=2
     )
-    run_entire_pipeline(options)
+    ret = run_entire_pipeline_C(options)
+    print(ret)
     print(parse_attitude_result(attitude_output_fname))
+    return ret
 
-
-def _run_single_pipeline(run_id):
-    """Helper function to run a single pipeline iteration."""
-    import os
-
-    from lost_api import parse_attitude_result, PipelineOptions, run_entire_pipeline
-
-    # Use unique output file for each parallel run
-    # File will be deleted after run is completed
-    attitude_output_fname = f"attitude_{os.getpid()}_{run_id}.txt"
-
+from lost_api import StarIDResult
+def test_run_starID_random_attitude() -> StarIDResult:
+    from lost_api import run_entire_pipeline_S, parse_attitude_result, PipelineOptions
+    attitude_output_fname = "attitude.txt"
     options = PipelineOptions(
         generate=1,
         generate_random_attitudes=True,
-        generate_exposure=1,
-        fov=20,
+        generate_exposure=0.6,
         centroid_algo="cog",
         database="tetra-20.dat",
         false_stars=0,
@@ -100,59 +140,47 @@ def _run_single_pipeline(run_id):
         attitude_algo="dqm",
         centroid_mag_filter=0,
         print_attitude=attitude_output_fname,
+        centroid_compare_threshold=2
     )
-    run_entire_pipeline(options)
-    res = parse_attitude_result(attitude_output_fname)
+    ret = run_entire_pipeline_S(options)
+    print(ret)
+    print(parse_attitude_result(attitude_output_fname))
+    return ret
 
-    # Clean up the temporary file from the lost directory
+def test_run_starID_given_attitude(ra_input: str | float, de_input: str | float, roll_input: str | float)-> StarIDResult:
     try:
-        lost_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "lost")
-        file_path = os.path.join(lost_dir, attitude_output_fname)
-        if os.path.exists(file_path):
-            os.remove(file_path)
-    except:
-        pass
-
-    return run_id, res.known
-
-
-def test_run_pipeline_n_times(n_input: str | int):
-    try:
-        n = int(n_input)
+        ra = float(ra_input)
+        de = float(de_input)
+        roll = float(roll_input)
     except ValueError:
-        raise ValueError("n must be convertible to int")
+        raise ValueError("ra, de, and roll must be convertible to float")
+    from lost_api import run_entire_pipeline_S, parse_attitude_result, PipelineOptions
+    attitude_output_fname = "attitude.txt"
+    options = PipelineOptions(
+        generate=1,
+        generate_ra=ra,
+        generate_de=de,
+        generate_roll=roll,
+        generate_random_attitudes=False,
+        generate_exposure=0.6,
+        centroid_algo="cog",
+        database="tetra-20.dat",
+        false_stars=0,
+        star_id_algo="tetra",
+        attitude_algo="dqm",
+        centroid_mag_filter=0,
+        print_attitude=attitude_output_fname
+    )
+    ret = run_entire_pipeline_S(options)
+    print(ret)
+    print(parse_attitude_result(attitude_output_fname))
+    return ret
 
-    if n <= 0:
-        raise ValueError("n must be a positive integer")
-
-    import os
-    from concurrent.futures import as_completed, ProcessPoolExecutor
-
-    # Use all available CPU cores
-    max_workers = os.cpu_count()
-    print(f"Running {n} iterations in parallel using {max_workers} workers...")
-
-    successful_runs = 0
-    completed = 0
-
-    with ProcessPoolExecutor(max_workers=max_workers) as executor:
-        # Submit all tasks
-        futures = {executor.submit(_run_single_pipeline, i): i for i in range(n)}
-
-        for future in as_completed(futures):
-            run_id, is_successful = future.result()
-            completed += 1
-
-            if is_successful:
-                successful_runs += 1
-
-            print(f"Run {completed}/{n}: {'Success' if is_successful else 'Failed'}")
-
-    print(f"\n{'='*50}")
-    print(f"Results: {successful_runs}/{n} successful runs")
-    print(f"Success rate: {(successful_runs/n)*100:.2f}%")
-    print(f"{'='*50}")
-
+def test_test():
+    a = test_run_starID_given_attitude(200, 40, 300)
+    b = test_run_centroiding_given_attitude(200, 40, 300)
+    print(a)
+    print(b)
 
 if __name__ == "__main__":
     current_module = sys.modules[__name__]
