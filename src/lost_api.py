@@ -515,3 +515,9 @@ def run_entire_pipeline_S(options: PipelineOptions) -> bool:
 #             print(result.stderr.decode().strip())
 #             return False
 #         return True
+#     except subprocess.CalledProcessError as e:
+#         print(f"Pipeline failed: {e.stderr.decode().strip()}")
+#         return False
+#     except Exception as e:
+#         print(f"Error: {e}")
+#         return False
