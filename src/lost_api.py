@@ -34,6 +34,8 @@ class TetraDbOptions:
 @dataclass
 class PipelineOptions:
     generate: int = 1
+    generate_x_res: int = 1024
+    generate_y_res: int = 1024
     generate_ra: float | None = None
     generate_de: float | None = None
     generate_roll: float | None = None
@@ -62,6 +64,8 @@ class PipelineOptions:
     print_input_centroids: str | None = None
     print_actual_centroids: str | None = None
     compare_star_ids: str | None = None
+    # centroid compare threshold
+    centroid_compare_threshold: int = 2
 
 
 @dataclass
@@ -211,6 +215,8 @@ def run_entire_pipeline(options: PipelineOptions) -> bool:
         "./lost",
         "pipeline",
         "--generate", str(options.generate),
+        "--generate-x-resolution", str(options.generate_x_res),
+        "--generate-y-resolution", str(options.generate_y_res),
         "--generate-exposure", str(options.generate_exposure),
         "--fov", str(options.fov),
         "--centroid-algo", options.centroid_algo,
@@ -232,21 +238,6 @@ def run_entire_pipeline(options: PipelineOptions) -> bool:
             "--generate-de", str(options.generate_de),
             "--generate-roll", str(options.generate_roll),
         ]
-    if options.fov_deg is not None:
-        cmd += ["--fov", str(options.fov_deg)]
-
-    # Optional intermediate outputs
-    if getattr(options, "print_input_centroids", None):
-        cmd += ["--print-input-centroids", options.print_input_centroids]
-    if getattr(options, "print_actual_centroids", None):
-        cmd += ["--print-actual-centroids", options.print_actual_centroids]
-    if getattr(options, "compare_star_ids", None):
-        cmd += ["--compare-star-ids", options.compare_star_ids]
-
-    # If a field-of-view (degrees) was provided, append it to the pipeline
-    # invocation. The LOST binary is expected to accept a `--fov <deg>` flag.
-    # If the binary does not support this flag, callers can ignore fov_deg or
-    # the flag will simply be unused by the underlying CLI.
     if options.fov_deg is not None:
         cmd += ["--fov", str(options.fov_deg)]
 
@@ -305,6 +296,215 @@ def parse_attitude_result(attitude_fname: str) -> AttitudeResult | None:
         return None
 
 
+# Centroiding test result
+@dataclass
+class CentroidResult:
+    centroids_num_correct: int | None = None
+    centroids_num_extra: int | None = None
+    centroids_mean_error: float | None = None
+
+def run_entire_pipeline_C(options: PipelineOptions) -> CentroidResult | None:
+    """Run the entire pipeline with centroid comparison output.
+    
+    Returns a CentroidResult with centroid statistics, or None on error.
+    """
+    lost_dir = _get_lost_dir()
+
+    # Either use random attitude or all of ra, de, roll must be provided
+    if not options.generate_random_attitudes and not all(
+        v is not None
+        for v in [options.generate_ra, options.generate_de, options.generate_roll]
+    ):
+        print(
+            "Error: Must specify RA, DE, and ROLL when generate_random_attitudes is False."
+        )
+        return None
+
+    cmd = [
+        "./lost",
+        "pipeline",
+        "--generate", str(options.generate),
+        "--generate-x-resolution", str(options.generate_x_res),
+        "--generate-y-resolution", str(options.generate_y_res),
+        "--generate-exposure", str(options.generate_exposure),
+        "--fov", str(options.fov),  
+        "--centroid-algo", options.centroid_algo,
+        "--database", options.database,
+        "--false-stars", str(options.false_stars),
+        "--star-id-algo", options.star_id_algo,
+        "--attitude-algo", options.attitude_algo,
+        "--centroid-mag-filter", str(options.centroid_mag_filter),
+        "--print-attitude", options.print_attitude,
+        "--plot-input", "input-foo-zeddie-test.png",
+        "--compare-centroids", "-",
+        "--centroid-compare-threshold", str(options.centroid_compare_threshold),
+    ]
+
+    # Check if assigned attitude or go random
+    if options.generate_random_attitudes:
+        cmd += ["--generate-random-attitudes", "true"]
+    else:
+        cmd += [
+            "--generate-ra", str(options.generate_ra),
+            "--generate-de", str(options.generate_de),
+            "--generate-roll", str(options.generate_roll),
+        ]
+
+    # ADD: Support for optional fov_deg override
+    if options.fov_deg is not None:
+        cmd += ["--fov", str(options.fov_deg)]
+
+    try:
+        result = subprocess.run(
+            cmd, cwd=lost_dir, stdout=subprocess.PIPE, text=True
+        )
+        if result.returncode != 0:
+            print(f"Pipeline failed with return code {result.returncode}")
+            print(result.stderr)
+            return None
+    except subprocess.CalledProcessError as e:
+        print(f"Pipeline failed: {e.stderr}")
+        return None
+    except Exception as e:
+        print(f"Error: {e}")
+        return None
+
+    output = result.stdout
+    cent_correct = None
+    cent_extra = None
+    cent_error = None
+    # get each line of outputs and grab the needed values
+    for raw in output.splitlines():
+        print(raw)
+        # clean up each line's spaces, continue if empty
+        line = raw.strip()
+        if not line:
+            continue
+        if line.startswith("centroids_num_correct"):
+            try:
+                cent_correct = int(line.split()[-1])
+            except Exception:
+                print("Failure on centroids_num_correct")
+        elif line.startswith("centroids_num_extra"):
+            try:
+                cent_extra = int(line.split()[-1])
+            except Exception:
+                print("Failure on centroids_num_extra")
+        elif line.startswith("centroids_mean_error"):
+            try:
+                cent_error = float(line.split()[-1])
+            except Exception:
+                print("Failure on centroids_mean_error")
+    return CentroidResult(
+        centroids_num_correct=cent_correct,
+        centroids_num_extra=cent_extra,
+        centroids_mean_error=cent_error,
+    )
+
+
+#STAR ID
+@dataclass
+class StarIDResult:
+    starid_num_correct: int | None = None
+    starid_num_incorrect: int | None = None
+    starid_num_total: int | None = None
+    
+def run_entire_pipeline_S(options: PipelineOptions) -> StarIDResult | None:
+    """Run the entire pipeline with star ID comparison output.
+    
+    Returns a StarIDResult with star ID statistics, or None on error.
+    """
+    lost_dir = _get_lost_dir()
+
+    # Either use random attitude or all of ra, de, roll must be provided
+    if not options.generate_random_attitudes and not all(
+        v is not None
+        for v in [options.generate_ra, options.generate_de, options.generate_roll]
+    ):
+        print(
+            "Error: Must specify RA, DE, and ROLL when generate_random_attitudes is False."
+        )
+        return None
+
+    cmd = [
+        "./lost",
+        "pipeline",
+        "--generate", str(options.generate),
+        "--generate-x-resolution", str(options.generate_x_res),
+        "--generate-y-resolution", str(options.generate_y_res),
+        "--generate-exposure", str(options.generate_exposure),
+        "--fov", str(options.fov),  
+        "--centroid-algo", options.centroid_algo,
+        "--database", options.database,
+        "--false-stars", str(options.false_stars),
+        "--star-id-algo", options.star_id_algo,
+        "--attitude-algo", options.attitude_algo,
+        "--centroid-mag-filter", str(options.centroid_mag_filter),
+        "--print-attitude", options.print_attitude,
+        "--plot-input", "input-foo-zeddie-test.png",
+        "--compare-star-ids", "-",
+    ]
+
+    if options.generate_random_attitudes:
+        cmd += ["--generate-random-attitudes", "true"]
+    else:
+        cmd += [
+            "--generate-ra", str(options.generate_ra),
+            "--generate-de", str(options.generate_de),
+            "--generate-roll", str(options.generate_roll),
+        ]
+
+    # ADD: Support for optional fov_deg override
+    if options.fov_deg is not None:
+        cmd += ["--fov", str(options.fov_deg)]
+
+    try:
+        result = subprocess.run(
+            cmd, cwd=lost_dir, stdout=subprocess.PIPE, text=True
+        )
+        if result.returncode != 0:
+            print(f"Pipeline failed with return code {result.returncode}")
+            print(result.stderr)
+            return None
+    except subprocess.CalledProcessError as e:
+        print(f"Pipeline failed: {e.stderr}")
+        return None
+    except Exception as e:
+        print(f"Error: {e}")
+        return None
+
+    output = result.stdout
+    sid_correct = None
+    sid_incorrect = None
+    sid_total = None
+    # get each line of outputs and grab the needed values
+    for raw in output.splitlines():
+        print(raw)
+        # clean up each line's spaces, continue if empty
+        line = raw.strip()
+        if not line:
+            continue
+        if line.startswith("starid_num_correct"):
+            try:
+                sid_correct = int(line.split()[-1])
+            except Exception:
+                print("Failure on starid_num_correct")
+        elif line.startswith("starid_num_incorrect"):
+            try:
+                sid_incorrect = int(line.split()[-1])
+            except Exception:
+                print("Failure on starid_num_incorrect")
+        elif line.startswith("starid_num_total"):
+            try:
+                sid_total = int(line.split()[-1])
+            except Exception:
+                print("Failure on starid_num_total")
+    return StarIDResult(
+        starid_num_correct=sid_correct,
+        starid_num_incorrect=sid_incorrect,
+        starid_num_total=sid_total,
+    )
+
 def compute_cross_boresight_accuracy(
     fov_deg: float,
     avg_centroid_accuracy: float,
@@ -319,13 +519,13 @@ def compute_cross_boresight_accuracy(
     Where:
         A = FOV (field-of-view in degrees)
         E_centroid = average centroiding accuracy (pixels)
-        N_pixel = total number of pixels in the image (width * height)
+        N_pixel = # of pixels across the focal plane
         N_star = average number of detected stars
 
     Args:
         fov_deg: field-of-view in degrees (A).
         avg_centroid_accuracy: average centroiding accuracy in pixels (E_centroid).
-        num_pixels: total number of pixels in the image, width * height (N_pixel).
+        num_pixels: # of pixels across the focal plane
         avg_detected_stars: average number of detected stars (N_star, can be fractional if averaged).
 
     Returns:
@@ -386,7 +586,7 @@ def compute_around_boresight_accuracy(
         avg_detected_stars: average number of detected stars (can be fractional if averaged).
 
     Returns:
-        The around-boresight roll error in radians as a float.
+        The around-boresight roll error.
 
     Raises:
         ValueError: if any input is invalid or non-positive where required.
