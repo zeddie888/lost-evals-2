@@ -2,9 +2,7 @@ import inspect
 import sys
 
 from lost_api import CompileOptions, CentroidResult, StarIDResult
-# Optional nearest-neighbor matching
 from scipy.spatial import KDTree
-HAVE_SCIPY = True
 
 def test_compile_lost():
     from lost_api import compile_lost
@@ -625,11 +623,6 @@ def test_ablation_study_fovs(runs_per_fov: str | int = 50):
                 if os.path.isfile(actual_path):
                     with open(actual_path, "r") as fa:
                         act_pts = parse_points(fa)
-                print("INPUT POINTS:")
-                print(inp_pts[:10])
-
-                print("ACTUAL POINTS:")
-                print(act_pts[:10])
                 print(f"input centroids detected: {len(inp_pts)}")
                 print(f"actual centroids visible: {len(act_pts)}")
 
@@ -648,32 +641,13 @@ def test_ablation_study_fovs(runs_per_fov: str | int = 50):
                     #
                     # Use nearest-neighbor matching
                     #
-                    if HAVE_SCIPY:
+                    
 
-                        tree = KDTree(act_pts)
+                    tree = KDTree(act_pts)
 
-                        for p in inp_pts:
-                            dist, idx = tree.query(p)
-                            errs.append(dist)
-
-                    else:
-                        #
-                        # Fallback brute-force nearest neighbor
-                        #
-                        for p in inp_pts:
-
-                            best = float("inf")
-
-                            for q in act_pts:
-                                d = math.hypot(
-                                    p[0] - q[0],
-                                    p[1] - q[1]
-                                )
-
-                                if d < best:
-                                    best = d
-
-                            errs.append(best)
+                    for p in inp_pts:
+                        dist, idx = tree.query(p)
+                        errs.append(dist)
 
                     if len(errs) > 0:
                         avg_error = sum(errs) / len(errs)
