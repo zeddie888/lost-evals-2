@@ -463,7 +463,7 @@ def test_ablation_study_fovs(runs_per_fov: str | int = 50):
     import re
 
     # FOV values to sweep (degrees)
-    fovs = [25, 30]
+    fovs = [5, 10, 15, 20, 25, 30]
 
     success_rates = []
     cross_boresight_accuracies = []
@@ -601,21 +601,6 @@ def test_ablation_study_fovs(runs_per_fov: str | int = 50):
             # Parse centroid files
             #
             try:
-                print("\nRAW INPUT FILE:")
-                with open(input_path, "r") as f:
-                    for _ in range(10):
-                        line = f.readline()
-                        if not line:
-                            break
-                        print(repr(line))
-
-                print("\nRAW ACTUAL FILE:")
-                with open(actual_path, "r") as f:
-                    for _ in range(10):
-                        line = f.readline()
-                        if not line:
-                            break
-                        print(repr(line))
                 if os.path.isfile(input_path):
                     with open(input_path, "r") as fi:
                         inp_pts = parse_points(fi)
