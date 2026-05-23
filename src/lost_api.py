@@ -200,6 +200,8 @@ def generate_tetra_database(options: TetraDbOptions) -> bool:
 
 def run_entire_pipeline(options: PipelineOptions) -> bool:
     lost_dir = _get_lost_dir()
+    output_dir = "output"
+    os.makedirs(os.path.join(lost_dir, output_dir), exist_ok=True)
 
     # Either use random attitude or all of ra, de, roll must be provided
     if not options.generate_random_attitudes and not all(
@@ -210,6 +212,8 @@ def run_entire_pipeline(options: PipelineOptions) -> bool:
             "Error: Must specify RA, DE, and ROLL when generate_random_attitudes is False."
         )
         return False
+    
+    attitude_out = f"{output_dir}/{options.print_attitude}"
 
     cmd = [
         "./lost",
@@ -225,9 +229,9 @@ def run_entire_pipeline(options: PipelineOptions) -> bool:
         "--star-id-algo", options.star_id_algo,
         "--attitude-algo", options.attitude_algo,
         "--centroid-mag-filter", str(options.centroid_mag_filter),
-        "--print-attitude", options.print_attitude,
-        "--plot-input", "input-foo-test.png",
-        "--plot-raw-input", "raw-input-foo-test.png",
+        "--print-attitude", attitude_out,
+        "--plot-input", f"{output_dir}/input-foo-test.png",
+        "--plot-raw-input", f"{output_dir}/raw-input-foo-test.png",
     ]
 
     if options.generate_random_attitudes:

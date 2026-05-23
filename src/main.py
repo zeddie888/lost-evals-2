@@ -211,6 +211,135 @@ def test_run_entire_pipeline_random_attitude():
 #     else:
 #         print("Attitude was not determined for this run")
 
+def test_fov_accuracy(
+    fovs: list[float] = [25.0, 75.0],
+    x_res: int = 1280,
+    y_res: int = 1024,
+    # pixel_size_um: float = 5.3,
+    n_trials: int = 5,
+):
+    import math
+    import csv
+    import os
+    from lost_api import (
+        PipelineOptions,
+        run_entire_pipeline_C,
+        run_entire_pipeline_S,
+        compute_cross_boresight_accuracy,
+        compute_around_boresight_accuracy,
+    )
+
+    all_run_rows = []
+    results = {}
+
+    for fov in fovs:
+        print(f"FOV: {fov} degrees \n")
+
+        centroid_errors = []
+        detected_stars_list = []
+        run_rows = []
+
+        for i in range(n_trials):
+            options = PipelineOptions(
+                generate=1,
+                generate_x_res=x_res,
+                generate_y_res=y_res,
+                generate_random_attitudes=True,
+                generate_exposure=0.6,
+                fov=fov,
+                fov_deg=fov,
+                centroid_algo="cog",
+                database="tetra-20.dat",
+                false_stars=0,
+                star_id_algo="tetra",
+                attitude_algo="dqm",
+                centroid_mag_filter=0,
+                print_attitude=f"output/attitude_fov{fov}_run{i}.txt",
+                centroid_compare_threshold=2,
+            )
+
+            c_result = run_entire_pipeline_C(options)
+            s_result = run_entire_pipeline_S(options)
+
+            if c_result and s_result:
+                is_valid = (
+                    c_result.centroids_mean_error is not None and
+                    not math.isnan(c_result.centroids_mean_error) and
+                    s_result.starid_num_total is not None and
+                    s_result.starid_num_total > 0
+                )
+
+                run_cross = None
+                run_around_rad = None
+                if is_valid:
+                    run_cross = compute_cross_boresight_accuracy(
+                        fov_deg=fov,
+                        avg_centroid_accuracy=c_result.centroids_mean_error,
+                        num_pixels=x_res,
+                        avg_detected_stars=s_result.starid_num_total,
+                    )
+                    run_around_rad = compute_around_boresight_accuracy(
+                        avg_centroid_accuracy=c_result.centroids_mean_error,
+                        num_pixels=x_res,
+                        avg_detected_stars=s_result.starid_num_total,
+                    )
+                    centroid_errors.append(c_result.centroids_mean_error)
+                    detected_stars_list.append(s_result.starid_num_total)
+
+                run_rows.append({
+                    "fov_deg": fov,
+                    "trial": i,
+                    "cross_boresight_arcsec": run_cross * 3600.0 if run_cross is not None else None,
+                    "around_boresight_arcsec": run_around_rad * 206265.0 if run_around_rad is not None else None,
+                    "around_boresight_deg": run_around_rad * 180.0 / math.pi if run_around_rad is not None else None,
+                })
+
+        all_run_rows.extend(run_rows)
+
+        if not centroid_errors:
+            print(f"  No successful trials for FOV: {fov} degrees")
+            continue
+
+        cross_values = [r["cross_boresight_arcsec"] for r in run_rows if r["cross_boresight_arcsec"] is not None]
+        around_values = [r["around_boresight_arcsec"] for r in run_rows if r["around_boresight_arcsec"] is not None]
+
+        avg_cross = sum(cross_values) / len(cross_values) if cross_values else None
+        avg_around = sum(around_values) / len(around_values) if around_values else None
+
+        results[fov] = {
+            "cross_boresight_arcsec": avg_cross,
+            "around_boresight_arcsec": avg_around,
+            "around_boresight_deg": avg_around / 3600.0 if avg_around is not None else None,
+        }
+
+    print(f"SUMMARY: ")
+    print(f"{'FOV':>13} | {'Cross(\")':>10} | {'Around(\")':>10}")
+    for fov, r in results.items():
+        print(
+            f"{fov:>5} degrees | "
+            f"{r['cross_boresight_arcsec']:>10.4f} | "
+            f"{r['around_boresight_arcsec']:>10.4f}"
+        )
+
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    csv_path = os.path.join(project_root, "fov_accuracy_results.csv")
+
+    fieldnames = [
+        "fov_deg",
+        "trial",
+        "cross_boresight_arcsec",
+        "around_boresight_arcsec",
+        "around_boresight_deg",
+    ]
+
+    with open(csv_path, "w", newline="") as csvfile:
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(all_run_rows)
+
+    print(f"\nSaved csv to: {csv_path}")
+    return results
+
 def test_ablation_study_resolutions(runs_per_res: str | int = 50, fov: float = 25.0):
     """Run an ablation study sweeping different image resolutions and plot success rate.
 
@@ -463,7 +592,8 @@ def test_ablation_study_fovs(runs_per_fov: str | int = 50):
     import re
 
     # FOV values to sweep (degrees)
-    fovs = [5, 10, 15, 20, 25, 30]
+    fovs = [25, 75]
+    output_subdir = "output"
 
     success_rates = []
     cross_boresight_accuracies = []
@@ -535,11 +665,11 @@ def test_ablation_study_fovs(runs_per_fov: str | int = 50):
             print("\n" + "=" * 60)
             print(f"STARTING RUN: FOV={fov} deg | run={i}")
             print("=" * 60)
-
-            attitude_fname = f"attitude_fov{fov}_run{i}.txt"
-            centroid_fname = f"input_centroids_fov{fov}_run{i}.txt"
-            actual_centroid_fname = f"actual_centroids_fov{fov}_run{i}.txt"
-            compare_star_ids_fname = f"compare_star_ids_fov{fov}_run{i}.txt"
+            
+            attitude_fname = f"{output_subdir}/attitude_fov{fov}_run{i}.txt"
+            centroid_fname = f"{output_subdir}/input_centroids_fov{fov}_run{i}.txt"
+            actual_centroid_fname = f"{output_subdir}/actual_centroids_fov{fov}_run{i}.txt"
+            compare_star_ids_fname = f"{output_subdir}/compare_star_ids_fov{fov}_run{i}.txt"
 
             options = PipelineOptions(
                 generate=1,
