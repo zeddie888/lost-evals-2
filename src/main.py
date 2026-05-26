@@ -2,7 +2,7 @@ import inspect
 import sys
 
 from lost_api import CompileOptions, CentroidResult, StarIDResult
-
+from scipy.spatial import KDTree
 
 def test_compile_lost():
     from lost_api import compile_lost
@@ -210,6 +210,134 @@ def test_run_entire_pipeline_random_attitude():
 #         print(f"Attitude determined: ra={res.ra}, de={res.de}, roll={res.roll}")
 #     else:
 #         print("Attitude was not determined for this run")
+
+def test_fov_accuracy(
+    fovs: list[float] = [25.0, 75.0],
+    x_res: int = 1280,
+    y_res: int = 1024,
+    # pixel_size_um: float = 5.3,
+    n_trials: int = 500,
+):
+    import math
+    import csv
+    import os
+    from lost_api import (
+        PipelineOptions,
+        compute_cross_boresight_accuracy,
+        compute_around_boresight_accuracy,
+        run_entire_pipeline_CS, 
+        PipelineResult
+    )
+
+    all_run_rows = []
+    results = {}
+
+    for fov in fovs:
+        print(f"FOV: {fov} degrees \n")
+
+        centroid_errors = []
+        detected_stars_list = []
+        run_rows = []
+
+        for i in range(n_trials):
+            options = PipelineOptions(
+                generate=1,
+                generate_x_res=x_res,
+                generate_y_res=y_res,
+                generate_random_attitudes=True,
+                generate_exposure=0.6,
+                fov=fov,
+                fov_deg=fov,
+                centroid_algo="cog",
+                database="tetra-20.dat",
+                false_stars=0,
+                star_id_algo="tetra",
+                attitude_algo="dqm",
+                centroid_mag_filter=0,
+                print_attitude=f"output/attitude_fov{fov}_run{i}.txt",
+                centroid_compare_threshold=2,
+            )
+
+            result = run_entire_pipeline_CS(options)
+
+            if result:
+                is_valid = (
+                    result.centroids_mean_error is not None and
+                    not math.isnan(result.centroids_mean_error) and
+                    result.starid_num_total is not None and
+                    result.starid_num_total > 0
+                )
+
+                run_cross = None
+                run_around_rad = None
+                if is_valid:
+                    run_cross = compute_cross_boresight_accuracy(
+                        fov_deg=fov,
+                        avg_centroid_accuracy=result.centroids_mean_error,
+                        num_pixels=x_res,
+                        avg_detected_stars=result.starid_num_total,
+                    )
+                    run_around_rad = compute_around_boresight_accuracy(
+                        avg_centroid_accuracy=result.centroids_mean_error,
+                        num_pixels=x_res,
+                        avg_detected_stars=result.starid_num_total,
+                    )
+                    centroid_errors.append(result.centroids_mean_error)
+                    detected_stars_list.append(result.starid_num_total)
+
+                run_rows.append({
+                    "fov_deg": fov,
+                    "trial": i,
+                    "cross_boresight_arcsec": run_cross * 3600.0 if run_cross is not None else None,
+                    "around_boresight_arcsec": run_around_rad * 206265.0 if run_around_rad is not None else None,
+                    "around_boresight_deg": run_around_rad * 180.0 / math.pi if run_around_rad is not None else None,
+                })
+
+        all_run_rows.extend(run_rows)
+
+        if not centroid_errors:
+            print(f"  No successful trials for FOV: {fov} degrees")
+            continue
+
+        cross_values = [r["cross_boresight_arcsec"] for r in run_rows if r["cross_boresight_arcsec"] is not None]
+        around_values = [r["around_boresight_arcsec"] for r in run_rows if r["around_boresight_arcsec"] is not None]
+
+        avg_cross = sum(cross_values) / len(cross_values) if cross_values else None
+        avg_around = sum(around_values) / len(around_values) if around_values else None
+
+        results[fov] = {
+            "cross_boresight_arcsec": avg_cross,
+            "around_boresight_arcsec": avg_around,
+            "around_boresight_deg": avg_around / 3600.0 if avg_around is not None else None,
+        }
+
+    print(f"SUMMARY: ")
+    print(f"{'FOV':>13} | {'Cross(\")':>10} | {'Around(\")':>10}")
+    for fov, r in results.items():
+        print(
+            f"{fov:>5} degrees | "
+            f"{r['cross_boresight_arcsec']:>10.4f} | "
+            f"{r['around_boresight_arcsec']:>10.4f}"
+        )
+
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    csv_path = os.path.join(project_root, "fov_accuracy_results.csv")
+
+    fieldnames = [
+        "fov_deg",
+        "trial",
+        "cross_boresight_arcsec",
+        "around_boresight_arcsec",
+        "around_boresight_deg",
+    ]
+
+    with open(csv_path, "w", newline="") as csvfile:
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(all_run_rows)
+
+    print(f"\nSaved csv to: {csv_path}")
+    return results
 
 def test_ablation_study_resolutions(runs_per_res: str | int = 50, fov: float = 25.0):
     """Run an ablation study sweeping different image resolutions and plot success rate.
@@ -443,34 +571,105 @@ def test_ablation_study_fovs(runs_per_fov: str | int = 50):
     """Run an ablation study sweeping different FOVs and plot success rate.
 
     runs_per_fov: number of repeated pipeline runs to average for each FOV.
-    The function will write a plot `ablation_fov.png` to the project root.
+    The function will write plots to the project root.
     """
+
     try:
         runs = int(runs_per_fov)
     except Exception:
         raise ValueError("runs_per_fov must be an integer or convertible to int")
 
-    from lost_api import run_entire_pipeline, parse_attitude_result, PipelineOptions
+    from lost_api import (
+        run_entire_pipeline,
+        parse_attitude_result,
+        PipelineOptions,
+    )
+
     import matplotlib.pyplot as plt
     import os
+    import math
+    import re
 
     # FOV values to sweep (degrees)
-    fovs = [5, 10, 15, 20, 25, 30]
+    fovs = [25, 75]
+    output_subdir = "output"
+
     success_rates = []
     cross_boresight_accuracies = []
     around_boresight_accuracies = []
 
+    # Store ALL run information for debugging
+    results = []
+
     project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    lost_dir = os.path.join(project_root, "lost")
+
+    num_re = re.compile(r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?")
+
+    def parse_points(file_obj):
+
+        points = []
+
+        current_x = None
+        current_y = None
+
+        for line in file_obj:
+
+            line = line.strip()
+
+            #
+            # Parse x
+            #
+            if "_x " in line:
+                try:
+                    current_x = float(line.split()[-1])
+                except:
+                    current_x = None
+
+            #
+            # Parse y
+            #
+            elif "_y " in line:
+                try:
+                    current_y = float(line.split()[-1])
+                except:
+                    current_y = None
+
+            #
+            # Once we have both x and y,
+            # append a point
+            #
+            if current_x is not None and current_y is not None:
+
+                points.append((current_x, current_y))
+
+                current_x = None
+                current_y = None
+
+        return points
 
     for fov in fovs:
+
         successes = 0
         centroid_errors = []
         detected_stars_list = []
+
+        print("\n")
+        print("#" * 70)
+        print(f"STARTING FOV SWEEP: {fov} degrees")
+        print("#" * 70)
+
         for i in range(runs):
-            attitude_fname = f"attitude_fov{fov}_run{i}.txt"
-            centroid_fname = f"input_centroids_fov{fov}_run{i}.txt"
-            actual_centroid_fname = f"actual_centroids_fov{fov}_run{i}.txt"
-            compare_star_ids_fname = f"compare_star_ids_fov{fov}_run{i}.txt"
+
+            print("\n" + "=" * 60)
+            print(f"STARTING RUN: FOV={fov} deg | run={i}")
+            print("=" * 60)
+            
+            attitude_fname = f"{output_subdir}/attitude_fov{fov}_run{i}.txt"
+            centroid_fname = f"{output_subdir}/input_centroids_fov{fov}_run{i}.txt"
+            actual_centroid_fname = f"{output_subdir}/actual_centroids_fov{fov}_run{i}.txt"
+            compare_star_ids_fname = f"{output_subdir}/compare_star_ids_fov{fov}_run{i}.txt"
+
             options = PipelineOptions(
                 generate=1,
                 generate_random_attitudes=True,
@@ -485,70 +684,185 @@ def test_ablation_study_fovs(runs_per_fov: str | int = 50):
                 print_input_centroids=centroid_fname,
                 print_actual_centroids=actual_centroid_fname,
                 compare_star_ids=compare_star_ids_fname,
-                fov_deg=float(fov)
+                fov_deg=float(fov),
             )
 
             ok = run_entire_pipeline(options)
+
             if not ok:
-                print(f"Pipeline run failed for FOV={fov} (run {i})")
+                print(f"Pipeline run failed for FOV={fov} run={i}")
+
+                results.append({
+                    "fov": fov,
+                    "run": i,
+                    "success": False,
+                    "pipeline_ok": False,
+                    "centroid_error": None,
+                    "detected_stars": None,
+                    "num_input_centroids": None,
+                    "num_actual_centroids": None,
+                })
+
                 continue
 
             res = parse_attitude_result(attitude_fname)
+
+            solved = False
+
             if res is None:
-                print(f"Could not parse attitude result for FOV={fov} (run {i})")
+                print(f"Could not parse attitude result for FOV={fov} run={i}")
+
             elif res.known:
+                solved = True
                 successes += 1
 
-            # Compute centroid error for this run
-            lost_dir = os.path.join(project_root, "lost")
+            print(f"SOLVED: {solved}")
+
             input_path = os.path.join(lost_dir, centroid_fname)
             actual_path = os.path.join(lost_dir, actual_centroid_fname)
+
             avg_error = None
+            count = None
+            inp_pts = []
+            act_pts = []
+
+            #
+            # Parse centroid files
+            #
             try:
-                import re
-                def parse_points(p):
-                    points = []
-                    num_re = re.compile(r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?")
-                    for line in p:
-                        toks = num_re.findall(line)
-                        if len(toks) >= 2:
-                            x = float(toks[0])
-                            y = float(toks[1])
-                            points.append((x, y))
-                    return points
-                if os.path.isfile(input_path) and os.path.isfile(actual_path):
-                    with open(input_path, "r") as fi, open(actual_path, "r") as fa:
+                if os.path.isfile(input_path):
+                    with open(input_path, "r") as fi:
                         inp_pts = parse_points(fi)
+
+                if os.path.isfile(actual_path):
+                    with open(actual_path, "r") as fa:
                         act_pts = parse_points(fa)
-                    n = min(len(inp_pts), len(act_pts))
-                    if n > 0:
-                        import math
-                        errs = [math.hypot(inp_pts[j][0] - act_pts[j][0], inp_pts[j][1] - act_pts[j][1]) for j in range(n)]
-                        avg_error = sum(errs) / n
-                if avg_error is not None:
-                    centroid_errors.append(avg_error)
-                    print("average centroiding error", avg_error)
-            except Exception as e:
-                print(f"Error computing centroid accuracy for FOV={fov} run {i}: {e}")
+                print(f"input centroids detected: {len(inp_pts)}")
+                print(f"actual centroids visible: {len(act_pts)}")
 
-            # Count detected stars for this run
-            actual_centroids_path = actual_path
+            except Exception as e:
+                print(f"Error parsing centroid files: {e}")
+
+            #
+            # Compute centroid error
+            #
             try:
-                if os.path.isfile(actual_centroids_path):
-                    with open(actual_centroids_path, "r") as f:
-                        import re
-                        num_re = re.compile(r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?")
-                        count = 0
-                        for line in f:
-                            if num_re.search(line):
-                                count += 1
-                    detected_stars_list.append(count)
-                    print("detected stars: ", count)
-            except Exception as e:
-                print(f"Error counting detected stars for FOV={fov} run {i}: {e}")
 
-            # Clean up files
-            # for fname in [attitude_fname, centroid_fname, actual_centroid_fname, compare_star_ids_fname]:
+                if len(inp_pts) > 0 and len(act_pts) > 0:
+
+                    errs = []
+
+                    #
+                    # Use nearest-neighbor matching
+                    #
+                    
+
+                    tree = KDTree(act_pts)
+
+                    for p in inp_pts:
+                        dist, idx = tree.query(p)
+                        errs.append(dist)
+
+                    if len(errs) > 0:
+                        avg_error = sum(errs) / len(errs)
+
+                        centroid_errors.append(avg_error)
+
+                        print(f"average centroiding error: {avg_error:.4f} px")
+
+            except Exception as e:
+                print(f"Error computing centroid accuracy: {e}")
+
+            #
+            # Count detected stars
+            #
+            try:
+                count = len(act_pts)
+
+                detected_stars_list.append(count)
+
+                print(f"detected stars: {count}")
+
+            except Exception as e:
+                print(f"Error counting stars: {e}")
+
+            #
+            # Store structured results
+            #
+            results.append({
+                "fov": fov,
+                "run": i,
+                "success": solved,
+                "pipeline_ok": True,
+                "centroid_error": avg_error,
+                "detected_stars": count,
+                "num_input_centroids": len(inp_pts),
+                "num_actual_centroids": len(act_pts),
+            })
+
+            #
+            # Accuracy metrics
+            #
+            if solved and avg_error is not None and count is not None and count >= 4:
+
+                try:
+
+                    from lost_api import (
+                        compute_cross_boresight_accuracy,
+                        compute_around_boresight_accuracy,
+                    )
+
+                    cross_acc = compute_cross_boresight_accuracy(
+                        fov_deg=float(fov),
+                        avg_centroid_accuracy=avg_error,
+                        num_pixels=1024,
+                        avg_detected_stars=count,
+                    )
+
+                    around_acc = compute_around_boresight_accuracy(
+                        avg_centroid_accuracy=avg_error,
+                        num_pixels=1024,
+                        avg_detected_stars=count,
+                    )
+
+                    if cross_acc is not None:
+                        cross_acc_arcsec = cross_acc * 3600.0
+                    else:
+                        cross_acc_arcsec = None
+
+                    if around_acc is not None:
+                        around_acc_arcsec = around_acc * 3600.0
+                    else:
+                        around_acc_arcsec = None
+
+                    print(
+                        f"cross-boresight accuracy: "
+                        f"{cross_acc_arcsec:.4f} arcsec"
+                    )
+
+                    print(
+                        f"around-boresight accuracy: "
+                        f"{around_acc_arcsec:.4f} arcsec"
+                    )
+
+                except Exception as e:
+                    print(f"Error computing attitude accuracies: {e}")
+
+            else:
+                print(
+                    "Skipping attitude accuracy computation "
+                    "(requires solved attitude and >=4 stars)"
+                )
+
+            #
+            # Optional cleanup
+            #
+            # for fname in [
+            #     attitude_fname,
+            #     centroid_fname,
+            #     actual_centroid_fname,
+            #     compare_star_ids_fname,
+            # ]:
             #     try:
             #         file_path = os.path.join(lost_dir, fname)
             #         if os.path.exists(file_path):
@@ -556,82 +870,77 @@ def test_ablation_study_fovs(runs_per_fov: str | int = 50):
             #     except Exception:
             #         pass
 
+        #
+        # Aggregate FOV statistics
+        #
         rate = successes / runs if runs > 0 else 0.0
+
         success_rates.append(rate)
-        print(f"FOV={fov} deg: success {successes}/{runs} -> {rate:.2%}")
 
-        # Compute average centroid error and detected stars for this FOV
-        avg_centroid_error = sum(centroid_errors) / len(centroid_errors) if centroid_errors else None
-        avg_detected_stars = sum(detected_stars_list) / len(detected_stars_list) if detected_stars_list else None
-        # Compute cross-boresight and around-boresight accuracy
-        cross_acc = None
-        around_acc = None
-        if avg_centroid_error is not None and avg_detected_stars is not None and avg_detected_stars > 0:
-            from lost_api import compute_cross_boresight_accuracy, compute_around_boresight_accuracy
-            try:
-                cross_acc = compute_cross_boresight_accuracy(
-                    fov_deg=float(fov),
-                    avg_centroid_accuracy=avg_centroid_error,
-                    num_pixels=1024,
-                    avg_detected_stars=avg_detected_stars,
-                )
-                # Convert cross-boresight accuracy from degrees to arcseconds
-                cross_acc_arcsec = cross_acc * 3600.0 if cross_acc is not None else None
-                around_acc = compute_around_boresight_accuracy(
-                    avg_centroid_accuracy=avg_centroid_error,
-                    num_pixels=1024,
-                    avg_detected_stars=avg_detected_stars,
-                )
-                # Convert around-boresight accuracy from degrees to arcseconds
-                around_acc_arcsec = around_acc * 3600.0 if around_acc is not None else None
-            except Exception as e:
-                print(f"Error computing accuracy metrics for FOV={fov}: {e}")
-                cross_acc_arcsec = None
-                around_acc_arcsec = None
-        else:
-            cross_acc_arcsec = None
-            around_acc_arcsec = None
-        cross_boresight_accuracies.append(cross_acc_arcsec)
-        around_boresight_accuracies.append(around_acc_arcsec)
+        print("\n")
+        print("-" * 60)
+        print(f"FOV={fov} deg summary")
+        print(f"successes: {successes}/{runs}")
+        print(f"success rate: {rate:.2%}")
 
-    # Plot results
+        if centroid_errors:
+            print(
+                f"average centroid error: "
+                f"{sum(centroid_errors)/len(centroid_errors):.4f} px"
+            )
+
+        if detected_stars_list:
+            print(
+                f"average detected stars: "
+                f"{sum(detected_stars_list)/len(detected_stars_list):.2f}"
+            )
+
+        print("-" * 60)
+
+        #
+        # Placeholder values for plotting
+        #
+        cross_boresight_accuracies.append(None)
+        around_boresight_accuracies.append(None)
+
+    #
+    # FINAL STRUCTURED RESULTS
+    #
+    print("\n\n")
+    print("#" * 70)
+    print("FINAL RESULTS")
+    print("#" * 70)
+
+    for r in results:
+        print(r)
+
+    #
+    # Plot success rate
+    #
     plt.figure(figsize=(8, 5))
-    plt.plot(fovs, success_rates, marker='o', label='Success Rate')
-    plt.title('Ablation study: attitude success rate vs FOV')
-    plt.xlabel('FOV (degrees)')
-    plt.ylabel('Success rate')
+
+    plt.plot(
+        fovs,
+        success_rates,
+        marker="o",
+        label="Success Rate"
+    )
+
+    plt.title("Ablation study: attitude success rate vs FOV")
+
+    plt.xlabel("FOV (degrees)")
+    plt.ylabel("Success rate")
+
     plt.ylim(-0.05, 1.05)
+
     plt.grid(True)
     plt.legend()
 
-    out_path = os.path.join(project_root, 'ablation_fov.png')
-    plt.savefig(out_path, bbox_inches='tight')
-    print(f"Saved ablation plot to: {out_path}")
+    out_path = os.path.join(project_root, "ablation_fov.png")
 
-    # Plot cross-boresight accuracy (arcseconds)
-    plt.figure(figsize=(8, 5))
-    plt.plot(fovs, cross_boresight_accuracies, marker='o', label='Cross-Boresight Accuracy (arcsec)')
-    plt.title('Ablation study: cross-boresight accuracy vs FOV')
-    plt.xlabel('FOV (degrees)')
-    plt.ylabel('Cross-boresight accuracy (arcseconds)')
-    plt.grid(True)
-    plt.legend()
-    out_path_cross = os.path.join(project_root, 'ablation_cross_boresight.png')
-    plt.savefig(out_path_cross, bbox_inches='tight')
-    print(f"Saved cross-boresight accuracy plot to: {out_path_cross}")
+    plt.savefig(out_path, bbox_inches="tight")
 
-    # Plot around-boresight accuracy (arcseconds)
-    plt.figure(figsize=(8, 5))
-    plt.plot(fovs, around_boresight_accuracies, marker='o', label='Around-Boresight Accuracy (arcsec)')
-    plt.title('Ablation study: around-boresight (roll) accuracy vs FOV')
-    plt.xlabel('FOV (degrees)')
-    plt.ylabel('Around-boresight accuracy (arcseconds)')
-    plt.grid(True)
-    plt.legend()
-    out_path_around = os.path.join(project_root, 'ablation_around_boresight.png')
-    plt.savefig(out_path_around, bbox_inches='tight')
-    print(f"Saved around-boresight accuracy plot to: {out_path_around}")
-
+    print(f"\nSaved success-rate plot to: {out_path}")
 
 def test_average_accuracy_across_trials(
     n_trials: int = 100,
