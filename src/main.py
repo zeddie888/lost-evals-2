@@ -216,17 +216,17 @@ def test_fov_accuracy(
     x_res: int = 1280,
     y_res: int = 1024,
     # pixel_size_um: float = 5.3,
-    n_trials: int = 5,
+    n_trials: int = 500,
 ):
     import math
     import csv
     import os
     from lost_api import (
         PipelineOptions,
-        run_entire_pipeline_C,
-        run_entire_pipeline_S,
         compute_cross_boresight_accuracy,
         compute_around_boresight_accuracy,
+        run_entire_pipeline_CS, 
+        PipelineResult
     )
 
     all_run_rows = []
@@ -258,15 +258,14 @@ def test_fov_accuracy(
                 centroid_compare_threshold=2,
             )
 
-            c_result = run_entire_pipeline_C(options)
-            s_result = run_entire_pipeline_S(options)
+            result = run_entire_pipeline_CS(options)
 
-            if c_result and s_result:
+            if result:
                 is_valid = (
-                    c_result.centroids_mean_error is not None and
-                    not math.isnan(c_result.centroids_mean_error) and
-                    s_result.starid_num_total is not None and
-                    s_result.starid_num_total > 0
+                    result.centroids_mean_error is not None and
+                    not math.isnan(result.centroids_mean_error) and
+                    result.starid_num_total is not None and
+                    result.starid_num_total > 0
                 )
 
                 run_cross = None
@@ -274,17 +273,17 @@ def test_fov_accuracy(
                 if is_valid:
                     run_cross = compute_cross_boresight_accuracy(
                         fov_deg=fov,
-                        avg_centroid_accuracy=c_result.centroids_mean_error,
+                        avg_centroid_accuracy=result.centroids_mean_error,
                         num_pixels=x_res,
-                        avg_detected_stars=s_result.starid_num_total,
+                        avg_detected_stars=result.starid_num_total,
                     )
                     run_around_rad = compute_around_boresight_accuracy(
-                        avg_centroid_accuracy=c_result.centroids_mean_error,
+                        avg_centroid_accuracy=result.centroids_mean_error,
                         num_pixels=x_res,
-                        avg_detected_stars=s_result.starid_num_total,
+                        avg_detected_stars=result.starid_num_total,
                     )
-                    centroid_errors.append(c_result.centroids_mean_error)
-                    detected_stars_list.append(s_result.starid_num_total)
+                    centroid_errors.append(result.centroids_mean_error)
+                    detected_stars_list.append(result.starid_num_total)
 
                 run_rows.append({
                     "fov_deg": fov,

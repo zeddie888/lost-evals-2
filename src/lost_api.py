@@ -509,6 +509,120 @@ def run_entire_pipeline_S(options: PipelineOptions) -> StarIDResult | None:
         starid_num_total=sid_total,
     )
 
+@dataclass
+class PipelineResult:
+    centroids_num_correct: int | None = None
+    centroids_num_extra: int | None = None
+    centroids_mean_error: float | None = None
+    starid_num_correct: int | None = None
+    starid_num_incorrect: int | None = None
+    starid_num_total: int | None = None
+
+
+def run_entire_pipeline_CS(options: PipelineOptions) -> PipelineResult | None:
+    """Run the entire pipeline with both centroid and star ID comparison output.
+
+    Returns a PipelineResult with both centroid and star ID statistics from
+    a single pipeline run, or None on error.
+    """
+    lost_dir = _get_lost_dir()
+
+    if not options.generate_random_attitudes and not all(
+        v is not None
+        for v in [options.generate_ra, options.generate_de, options.generate_roll]
+    ):
+        print("Error: Must specify RA, DE, and ROLL when generate_random_attitudes is False.")
+        return None
+
+    cmd = [
+        "./lost",
+        "pipeline",
+        "--generate", str(options.generate),
+        "--generate-x-resolution", str(options.generate_x_res),
+        "--generate-y-resolution", str(options.generate_y_res),
+        "--generate-exposure", str(options.generate_exposure),
+        "--fov", str(options.fov),
+        "--centroid-algo", options.centroid_algo,
+        "--database", options.database,
+        "--false-stars", str(options.false_stars),
+        "--star-id-algo", options.star_id_algo,
+        "--attitude-algo", options.attitude_algo,
+        "--centroid-mag-filter", str(options.centroid_mag_filter),
+        "--print-attitude", options.print_attitude,
+        "--plot-input", "input-foo-zeddie-test.png",
+        "--compare-centroids", "-",
+        "--centroid-compare-threshold", str(options.centroid_compare_threshold),
+        "--compare-star-ids", "-",
+    ]
+
+    if options.generate_random_attitudes:
+        cmd += ["--generate-random-attitudes", "true"]
+    else:
+        cmd += [
+            "--generate-ra", str(options.generate_ra),
+            "--generate-de", str(options.generate_de),
+            "--generate-roll", str(options.generate_roll),
+        ]
+
+    if options.fov_deg is not None:
+        cmd += ["--fov", str(options.fov_deg)]
+
+    try:
+        result = subprocess.run(
+            cmd, cwd=lost_dir, stdout=subprocess.PIPE, text=True
+        )
+        if result.returncode != 0:
+            print(f"Pipeline failed with return code {result.returncode}")
+            print(result.stderr)
+            return None
+    except subprocess.CalledProcessError as e:
+        print(f"Pipeline failed: {e.stderr}")
+        return None
+    except Exception as e:
+        print(f"Error: {e}")
+        return None
+
+    output = result.stdout
+    parsed = PipelineResult()
+
+    for raw in output.splitlines():
+        print(raw)
+        line = raw.strip()
+        if not line:
+            continue
+        if line.startswith("centroids_num_correct"):
+            try:
+                parsed.centroids_num_correct = int(line.split()[-1])
+            except Exception:
+                print("Failure on centroids_num_correct")
+        elif line.startswith("centroids_num_extra"):
+            try:
+                parsed.centroids_num_extra = int(line.split()[-1])
+            except Exception:
+                print("Failure on centroids_num_extra")
+        elif line.startswith("centroids_mean_error"):
+            try:
+                parsed.centroids_mean_error = float(line.split()[-1])
+            except Exception:
+                print("Failure on centroids_mean_error")
+        elif line.startswith("starid_num_correct"):
+            try:
+                parsed.starid_num_correct = int(line.split()[-1])
+            except Exception:
+                print("Failure on starid_num_correct")
+        elif line.startswith("starid_num_incorrect"):
+            try:
+                parsed.starid_num_incorrect = int(line.split()[-1])
+            except Exception:
+                print("Failure on starid_num_incorrect")
+        elif line.startswith("starid_num_total"):
+            try:
+                parsed.starid_num_total = int(line.split()[-1])
+            except Exception:
+                print("Failure on starid_num_total")
+
+    return parsed
+
 def compute_cross_boresight_accuracy(
     fov_deg: float,
     avg_centroid_accuracy: float,
