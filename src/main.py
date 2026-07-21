@@ -455,10 +455,11 @@ def test_ablation_study_fovs(runs_per_fov: str | int = 50):
     import os
 
     # FOV values to sweep (degrees)
-    fovs = [5, 10, 15, 20, 25, 30]
+    fovs = [25, 75]
     success_rates = []
     cross_boresight_accuracies = []
     around_boresight_accuracies = []
+    output_subdir = "output"
 
     project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -467,10 +468,10 @@ def test_ablation_study_fovs(runs_per_fov: str | int = 50):
         centroid_errors = []
         detected_stars_list = []
         for i in range(runs):
-            attitude_fname = f"attitude_fov{fov}_run{i}.txt"
-            centroid_fname = f"input_centroids_fov{fov}_run{i}.txt"
-            actual_centroid_fname = f"actual_centroids_fov{fov}_run{i}.txt"
-            compare_star_ids_fname = f"compare_star_ids_fov{fov}_run{i}.txt"
+            attitude_fname = f"{output_subdir}/attitude_res{res}_run{i}.txt"
+            centroid_fname = f"{output_subdir}/input_centroids_res{res}_run{i}.txt"
+            actual_centroid_fname = f"{output_subdir}/actual_centroids_fov{fov}_run{i}.txt"
+            compare_star_ids_fname = f"{output_subdir}/compare_star_ids_fov{fov}_run{i}.txt"
             options = PipelineOptions(
                 generate=1,
                 generate_random_attitudes=True,
