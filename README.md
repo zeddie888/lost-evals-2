@@ -35,3 +35,52 @@ ln -s <absolute path of lost folder> lost
 If you want to make edits to this repo, I recommend the following setup:
 - VSCode
 - Use `autopep8` as your Python formatter, install this VSCode extension: [link](https://marketplace.visualstudio.com/items?itemName=ms-python.autopep8)
+
+## Paired Tetra / Pyramid pilot
+
+Build LOST commit `a2303e6080bcbb2763596c26620f267d6c9bcd11` in release mode.
+From this repo root, run:
+
+```sh
+python3 src/paired.py --lost-dir /absolute/path/to/built/lost --output pilot
+python3 src/paired.py --lost-dir /absolute/path/to/built/lost --manifest pilot/cases.json --output replay
+python3 -m unittest discover -s tests
+```
+
+The runner uses Python 3.10 or later on macOS or Linux. It needs no extra
+Python packages. Each run builds both databases from the same catalog and
+magnitude cutoff. Choose a new output directory for each run.
+
+By default, the runner tests 100 clean fields, the same 100 fields with five
+false detections added to each, and 10 fields containing only false detections.
+Both algorithms receive the same ordered star positions and labels. A correct
+solve has at least four correct IDs and no wrong IDs. A wrong ID counts as a
+wrong solve; fewer than four correct IDs with no wrong IDs counts as no solve.
+The runner logs errors separately and excludes pairs it cannot verify.
+
+Open `summary.md` for the comparison, `results.csv` for individual results, and
+`run.json` for the database settings and file hashes. Use `cases.json` to replay
+the same fields. The star ID timer excludes startup and database loading.
+Peak memory includes the database and simulator. The target commit in
+`run.json` records which source to build; the binary hash identifies the
+executable used for the run.
+
+### Run on a BeagleBone Black
+
+Use a Debian installation with Python 3.10 or newer. Build LOST natively on
+the board from the commit above; the macOS executable will not run on it.
+For a Debian build, install `g++ make groff xxd libcairo2-dev libeigen3-dev`
+and build with `make -j1 release LOST_DISABLE_ASAN=1`. Use one build job to
+limit memory use. Check free storage and RAM before building the databases.
+
+Copy this benchmark and the desktop run's `cases.json` to the board. First
+run the command above with `--fields 1` and a fresh output directory. Check
+that both algorithms pass the known case. Then use `--manifest` with the
+desktop case list and use a separate output directory for the board run.
+The benchmark needs no camera.
+
+Keep the raw input files from both machines. A shared seed does not guarantee
+identical inputs across C++ libraries or architectures. Compare the ordered
+coordinates and catalog labels in the per-case `.input` files before treating
+the numbers as a direct hardware comparison. If they differ, use stored
+centroids with a replay driver before drawing hardware comparisons.
