@@ -1,4 +1,4 @@
-"""Run a serial, paired LOST star-ID pilot (Python standard library only)."""
+"""Compare Tetra and Pyramid on the same simulated star fields."""
 
 import argparse
 import csv
@@ -16,6 +16,9 @@ import time
 from pathlib import Path
 
 ALGORITHMS = ("tetra", "py")
+ALGORITHM_NAMES = {"tetra": "Tetra", "py": "Pyramid"}
+CONDITION_NAMES = {"clean": "Clean", "false": "Five false detections",
+                   "negative": "False detections only"}
 LOST_COMMIT = "a2303e6080bcbb2763596c26620f267d6c9bcd11"
 DATABASE_OPTIONS = {
     "tetra": ["--tetra", "--tetra-max-angle", "20"],
@@ -170,14 +173,15 @@ def profile_memory(binary, cwd, out, case, row, database):
 
 
 def readout(rows, costs):
-    lines = ["# Tetra vs. Pyramid pilot", "",
-             "Paired star-ID comparison at 12° horizontal FOV. False and failed solves "
-             "are shown separately. Unverified pairs are excluded from comparison; RSS includes the database and input setup.", "",
-             "| Algorithm | Condition | Cases | Correct | Wrong | No solve | Unverified | "
-             "Median / p95 µs (n) | Max RSS MiB (n) |",
+    lines = ["# Tetra and Pyramid benchmark", "",
+             "Both algorithms received the same simulated star positions at a 12° "
+             "horizontal field of view. The table excludes pairs whose inputs could "
+             "not be verified. Peak memory includes the database and simulator.", "",
+             "| Algorithm | Condition | Cases | Correct | Wrong | No solve | Excluded | "
+             "Median / p95 (µs; samples) | Peak memory (MiB; samples) |",
              "|---|---|---:|---:|---:|---:|---:|---:|---:|"]
     for algorithm in ALGORITHMS:
-        for condition in ("clean", "false", "negative"):
+        for condition, label in CONDITION_NAMES.items():
             group = [r for r in rows if r["algorithm"] == algorithm and r["condition"] == condition]
             verified = [r for r in group if r["paired_input_verified"]]
             counts = [sum(r["outcome"] == label for r in verified)
@@ -188,25 +192,25 @@ def readout(rows, costs):
                       f"{elapsed[math.ceil(.95 * len(elapsed)) - 1]/1000:.1f} ({len(elapsed)})"
                       if elapsed else "—")
             rss = f"{max(memory)/2**20:.1f} ({len(memory)})" if memory else "—"
-            lines.append("| " + " | ".join(map(str, (algorithm, condition, len(group),
-                         *counts, len(group)-sum(counts), timing, rss))) + " |")
-    lines += ["", "On negative controls, any returned ID is a false accept. Ten controls "
-              "cannot establish a rare false-accept rate.", "", "Database costs:"]
+            lines.append("| " + " | ".join(map(str, (ALGORITHM_NAMES[algorithm], label, len(group),
+                         *counts, len(group) - len(verified), timing, rss))) + " |")
+    lines += ["", "Any ID returned on a false-only field counts as a wrong match.",
+              "", "**Database size and build time**"]
     for algorithm, cost in costs.items():
-        lines.append(f"- {algorithm}: {cost['bytes']/2**20:.2f} MiB, "
+        lines.append(f"- {ALGORITHM_NAMES[algorithm]}: {cost['bytes']/2**20:.2f} MiB, "
                      f"build {cost['build_seconds']:.2f} s.")
     return "\n".join(lines) + "\n"
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--lost-dir", type=Path, required=True)
-    parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--manifest", type=Path)
-    parser.add_argument("--fields", type=int, default=100)
+    parser.add_argument("--lost-dir", type=Path, required=True, help="Directory containing the LOST binary and catalog")
+    parser.add_argument("--output", type=Path, required=True, help="New directory for results")
+    parser.add_argument("--manifest", type=Path, help="Replay cases from an earlier run")
+    parser.add_argument("--fields", type=int, default=100, help="Number of sky fields to generate (default: 100)")
     args = parser.parse_args()
     if args.fields < 1 or not (args.lost_dir / "lost").is_file():
-        parser.error("provide a built LOST directory and a positive field count")
+        parser.error("--lost-dir must contain a LOST binary, and --fields must be positive")
     cwd = args.lost_dir.resolve()
     binary = cwd / "lost"
     output = args.output.resolve()
@@ -263,10 +267,10 @@ def main():
         if case["condition"] == "smoke" and any(r["outcome"] != "correct" for r, _ in pair):
             raise RuntimeError("Both algorithms must pass the smoke case; inspect raw logs")
         rows.extend(row for row, _ in pair)
-    for index, case in enumerate(cases):
-        start = index * len(ALGORITHMS)
-        for row in rows[start:start + len(ALGORITHMS)]:
-            profile_memory(binary, cwd, raw, case, row, databases[row["algorithm"]])
+    cases_by_id = {case["id"]: case for case in cases}
+    for row in rows:
+        profile_memory(binary, cwd, raw, cases_by_id[row["case"]],
+                       row, databases[row["algorithm"]])
     with (output / "results.csv").open("w", newline="") as table:
         writer = csv.DictWriter(table, fieldnames=list(rows[0]))
         writer.writeheader()

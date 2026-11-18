@@ -47,24 +47,40 @@ python3 src/paired.py --lost-dir /absolute/path/to/built/lost --manifest pilot/c
 python3 -m unittest discover -s tests
 ```
 
-The standalone runner needs Python 3.10+ on macOS or Linux and no Python packages.
-It invokes LOST directly because the existing wrapper renders plots and does not
-expose the deterministic, centroid-only and timing options needed here.
-Each run builds and times separate databases from the same catalog and magnitude
-cutoff. Use a fresh output directory; nothing is written into the LOST checkout.
+The runner uses Python 3.10 or later on macOS or Linux. It needs no extra
+Python packages. Each run builds both databases from the same catalog and
+magnitude cutoff. Choose a new output directory for each run.
 
-The pilot verifies a known smoke case and compares 100 clean fields, their
-five-false-detection counterparts, and 10 false-only controls at 12° horizontal
-FOV. LOST generates false stars across the sky; the runner selects seeds with
-exactly five detections in-frame and checks ordered inputs and labels across
-algorithms. Clean and stressed versions use identical camera attitudes. With
-no centroid perturbation, comparison uses an exact position threshold. A
-correct solve requires four or more correct IDs and no wrong IDs; failures to
-execute are separate from algorithm no-solves.
+By default, the runner tests 100 clean fields, the same 100 fields with five
+false detections added to each, and 10 fields containing only false detections.
+Both algorithms receive the same ordered star positions and labels. A correct
+solve has at least four correct IDs and no wrong IDs. A wrong ID counts as a
+wrong solve; fewer than four correct IDs with no wrong IDs counts as no solve.
+The runner logs errors separately and excludes pairs it cannot verify.
 
-Start with `summary.md`, then refer to `results.csv`, `cases.json`, `run.json`
-and the per-case logs under `raw/`. The stage timer excludes startup and
-database loading. Peak RSS is measured serially in fresh processes via
-`getrusage` and includes the database and simulator allocations. The catalog
-and binary hashes identify inputs; the reported target commit is the expected
-source revision, not a verification of how the executable was built.
+Open `summary.md` for the comparison, `results.csv` for individual results, and
+`run.json` for the database settings and file hashes. Use `cases.json` to replay
+the same fields. The star ID timer excludes startup and database loading.
+Peak memory includes the database and simulator. The target commit in
+`run.json` records which source to build; the binary hash identifies the
+executable used for the run.
+
+### Run on a BeagleBone Black
+
+Use a Debian installation with Python 3.10 or newer. Build LOST natively on
+the board from the commit above; the macOS executable will not run on it.
+For a Debian build, install `g++ make groff xxd libcairo2-dev libeigen3-dev`
+and build with `make -j1 release LOST_DISABLE_ASAN=1`. Use one build job to
+limit memory use. Check free storage and RAM before building the databases.
+
+Copy this benchmark and the desktop run's `cases.json` to the board. First
+run the command above with `--fields 1` and a fresh output directory. Check
+that both algorithms pass the known case. Then use `--manifest` with the
+desktop case list and use a separate output directory for the board run.
+The benchmark needs no camera.
+
+Keep the raw input files from both machines. A shared seed does not guarantee
+identical inputs across C++ libraries or architectures. Compare the ordered
+coordinates and catalog labels in the per-case `.input` files before treating
+the numbers as a direct hardware comparison. If they differ, use stored
+centroids with a replay driver before drawing hardware comparisons.
