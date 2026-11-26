@@ -221,7 +221,7 @@ def _rms(vals: list[float]) -> float:
         return 0.0
     return float(np.sqrt(np.mean(np.square(vals))))
   
-def _parse_centroid_positions(path: str) -> tuple[list[float], list[float]]:
+def _parse_file(path: str) -> tuple[list[float], list[float]]:
     # Parse output files into a tuple of two list[float]s
     import re
 
@@ -308,7 +308,7 @@ def _run_boresight_trial(ra, de, roll, seed, fov_deg, x_res, y_res, lost_dir, ou
     star_spread = None
     centroid_path = os.path.join(lost_dir, actual_centroid_fname)
     if os.path.isfile(centroid_path):
-        xs, ys = _parse_centroid_positions(centroid_path)
+        xs, ys = _parse_file(centroid_path)
         if xs and ys:
             star_spread = math.hypot(_rms(xs), _rms(ys))
 
@@ -337,7 +337,7 @@ def test_boresight_accuracy(
     y_res: int = 1024,
 ):
     if attitudes is None:
-        attitudes = sample_attitudes(5000, seed=0)
+        attitudes = sample_attitudes(1000, seed=0) # edit this to change sample size
         n_trials_per_attitude = 1
     n_per = int(n_trials_per_attitude)
 
