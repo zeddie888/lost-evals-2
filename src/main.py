@@ -24,7 +24,7 @@ def test_generate_tetra_database():
     from lost_api import generate_tetra_database, TetraDbOptions
 
     # NOTE: change this to match your image FOV
-    options = TetraDbOptions(min_mag=7, tetra_max_fov=25, output="tetra-20.dat")
+    options = TetraDbOptions(min_mag=7, tetra_max_fov=32, output="tetra-32.dat")
     generate_tetra_database(options)
 
 
@@ -268,7 +268,7 @@ def _run_boresight_trial(ra, de, roll, seed, fov_deg, x_res, y_res, lost_dir, ou
         generate_ra=ra, generate_de=de, generate_roll=roll,
         generate_random_attitudes=False, generate_seed=seed,
         generate_exposure=0.6, fov_deg=fov_deg,
-        centroid_algo="cog", database="tetra-20.dat", false_stars=0,
+        centroid_algo="cog", database="tetra-32.dat", false_stars=0,
         star_id_algo="tetra", attitude_algo="dqm", centroid_mag_filter=0,
         print_attitude=attitude_fname, print_actual_centroids=actual_centroid_fname,
     )
