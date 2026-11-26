@@ -1,6 +1,9 @@
 import inspect
 import sys
 
+import numpy as np
+
+from evaluators import cross_and_roll_error_arcsec
 from lost_api import CompileOptions, CentroidResult, StarIDResult
 
 
@@ -21,7 +24,7 @@ def test_generate_tetra_database():
     from lost_api import generate_tetra_database, TetraDbOptions
 
     # NOTE: change this to match your image FOV
-    options = TetraDbOptions(min_mag=7, tetra_max_angle=20, output="tetra-20.dat")
+    options = TetraDbOptions(min_mag=7, tetra_max_fov=25, output="tetra-20.dat")
     generate_tetra_database(options)
 
 
@@ -210,6 +213,171 @@ def test_run_entire_pipeline_random_attitude():
 #         print(f"Attitude determined: ra={res.ra}, de={res.de}, roll={res.roll}")
 #     else:
 #         print("Attitude was not determined for this run")
+
+import math
+
+def _rms(vals: list[float]) -> float:
+    if not vals:
+        return 0.0
+    return float(np.sqrt(np.mean(np.square(vals))))
+  
+def _parse_centroid_positions(path: str) -> tuple[list[float], list[float]]:
+    # Parse output files into a tuple of two list[float]s
+    import re
+
+    key_re = re.compile(r"actual_centroid_(\d+)_([xy])")
+    coords: dict[int, dict[str, float]] = {}
+
+    with open(path) as f:
+        for line in f:
+            parts = line.strip().split()
+            if len(parts) != 2:
+                continue
+            key, value = parts
+            m = key_re.match(key)
+            if not m:
+                continue
+            idx, axis = int(m.group(1)), m.group(2)
+            try:
+                val = float(value)
+            except ValueError:
+                continue
+            coords.setdefault(idx, {})[axis] = val
+
+    xs, ys = [], []
+    for idx in sorted(coords):
+        entry = coords[idx]
+        if "x" in entry and "y" in entry:
+            xs.append(entry["x"])
+            ys.append(entry["y"])
+    return xs, ys
+  
+from collections import Counter
+import os
+import re
+
+def _run_boresight_trial(ra, de, roll, seed, fov_deg, x_res, y_res, lost_dir, output_dir):
+    from lost_api import PipelineOptions, run_entire_pipeline, parse_attitude_result
+
+    attitude_fname = f"sweep_attitude_{seed}.txt"
+    actual_centroid_fname = f"sweep_centroids_{seed}.txt"
+    centroid_path = os.path.join(lost_dir, output_dir, "centroids", actual_centroid_fname)
+
+    options = PipelineOptions(
+        generate=1, generate_x_res=x_res, generate_y_res=y_res,
+        generate_ra=ra, generate_de=de, generate_roll=roll,
+        generate_random_attitudes=False, generate_seed=seed,
+        generate_exposure=0.6, fov_deg=fov_deg,
+        centroid_algo="cog", database="tetra-20.dat", false_stars=0,
+        star_id_algo="tetra", attitude_algo="dqm", centroid_mag_filter=0,
+        print_attitude=attitude_fname, print_actual_centroids=actual_centroid_fname,
+    )
+
+    ok, output_text = run_entire_pipeline(options, capture_output=True)
+    centroid_match = re.search(r"num centroids:\s*(\d+)", output_text)
+    centroid_count = int(centroid_match.group(1)) if centroid_match else None
+    star_id_failed = "TETRA FAIL" in output_text
+    
+    if not ok:
+        if not getattr(_run_boresight_trial, "_shown", False):
+            print("LOST failed. Output tail:\n", output_text[-2000:])
+            _run_boresight_trial._shown = True
+        return {"success": False, "reason": "pipeline_run_failed", "centroid_count": centroid_count}
+    
+    result = parse_attitude_result(attitude_fname)
+    if result is None or not result.known:
+        reason = "star_id_fail" if star_id_failed else "attitude_algo_fail"
+        return {"success": False, "reason": reason, "centroid_count": centroid_count}
+
+    pitch_arcsec, yaw_arcsec, roll_arcsec = cross_and_roll_error_arcsec(
+        (ra, de, roll), (result.i, result.j, result.k, result.real)
+    )
+    
+    BLUNDER_THRESHOLD_ARCSEC = 3600.0
+    is_blunder = (
+        abs(pitch_arcsec) > BLUNDER_THRESHOLD_ARCSEC or
+        abs(yaw_arcsec) > BLUNDER_THRESHOLD_ARCSEC or
+        abs(roll_arcsec) > BLUNDER_THRESHOLD_ARCSEC
+    )
+    if is_blunder:
+        return {
+            "success": False, "reason": "attitude_blunder", "centroid_count": centroid_count,
+            "pitch_arcsec": pitch_arcsec, "yaw_arcsec": yaw_arcsec, "roll_arcsec": roll_arcsec,
+        }
+
+    star_spread = None
+    centroid_path = os.path.join(lost_dir, actual_centroid_fname)
+    if os.path.isfile(centroid_path):
+        xs, ys = _parse_centroid_positions(centroid_path)
+        if xs and ys:
+            star_spread = math.hypot(_rms(xs), _rms(ys))
+
+    return {
+        "success": True, "reason": None, "centroid_count": centroid_count,
+        "pitch_arcsec": pitch_arcsec, "yaw_arcsec": yaw_arcsec, "roll_arcsec": roll_arcsec,
+        "star_spread_px": star_spread,
+    }
+
+def sample_attitudes(n: int, seed: int = 0, pole_exclusion_deg: float = 0.1):
+    rng = np.random.default_rng(seed)
+    out = []
+    while len(out) < n:
+        ra = rng.uniform(0, 360)
+        de = np.degrees(np.arcsin(rng.uniform(-1, 1)))
+        if 90 - abs(de) < pole_exclusion_deg:
+            continue
+        out.append((ra, de, rng.uniform(0, 360)))
+    return out
+
+def test_boresight_accuracy(
+    attitudes: list[tuple[float, float, float]] | None = None,
+    n_trials_per_attitude: str | int = 10,
+    fov_deg: float = 32.0,
+    x_res: int = 1024,
+    y_res: int = 1024,
+):
+    if attitudes is None:
+        attitudes = sample_attitudes(5000, seed=0)
+        n_trials_per_attitude = 1
+    n_per = int(n_trials_per_attitude)
+
+    from lost_api import _get_lost_dir
+    lost_dir = _get_lost_dir()
+    output_dir = "output"
+    os.makedirs(os.path.join(lost_dir, output_dir), exist_ok=True)
+
+    pitch, yaw, roll_err = [], [], []
+    failure_reasons = Counter()
+
+    seed = 0
+    for ra, de, roll in attitudes:
+        for _ in range(n_per):
+            t = _run_boresight_trial(ra, de, roll, seed, fov_deg, x_res, y_res, lost_dir, output_dir)
+            seed += 1
+            if not t["success"]:
+                failure_reasons[t["reason"]] += 1
+                continue
+            pitch.append(t["pitch_arcsec"])
+            yaw.append(t["yaw_arcsec"])
+            roll_err.append(t["roll_arcsec"])
+
+    total = len(attitudes) * n_per
+    n_ok = len(pitch)
+    print(f"\n{'=' * 60}")
+    print(f"Success: {n_ok}/{total} ({n_ok / total:.1%})   Failures: {dict(failure_reasons)}")
+
+    results = {"n": total, "n_success": n_ok, "failures": dict(failure_reasons)}
+    if n_ok:
+        cross = np.concatenate([pitch, yaw])  # per-axis cross-boresight
+        r = np.array(roll_err)
+        print(f"\n{'':<14}{'mean':>9}{'RMS (1σ)':>11}{'99.7%':>10}")
+        for name, v in [("Cross (axis)", cross), ("Roll", r)]:
+            rms = np.sqrt(np.mean(v**2))
+            p997 = np.percentile(np.abs(v), 99.7)
+            print(f"{name:<14}{np.mean(v):>8.2f}\"{rms:>10.2f}\"{p997:>9.2f}\"")
+            results[name] = {"mean": float(np.mean(v)), "rms": float(rms), "p99_7": float(p997)}
+    print("=" * 60)
+    return results
 
 def test_ablation_study_resolutions(runs_per_res: str | int = 50, fov: float = 25.0):
     """Run an ablation study sweeping different image resolutions and plot success rate.
@@ -468,10 +636,10 @@ def test_ablation_study_fovs(runs_per_fov: str | int = 50):
         centroid_errors = []
         detected_stars_list = []
         for i in range(runs):
-            attitude_fname = f"{output_subdir}/attitude_res{res}_run{i}.txt"
-            centroid_fname = f"{output_subdir}/input_centroids_res{res}_run{i}.txt"
-            actual_centroid_fname = f"{output_subdir}/actual_centroids_fov{fov}_run{i}.txt"
-            compare_star_ids_fname = f"{output_subdir}/compare_star_ids_fov{fov}_run{i}.txt"
+            attitude_fname = f"attitude_res{fov}_run{i}.txt"
+            centroid_fname = f"input_centroids_res{fov}_run{i}.txt"
+            actual_centroid_fname = f"actual_centroids_fov{fov}_run{i}.txt"
+            compare_star_ids_fname = f"compare_star_ids_fov{fov}_run{i}.txt"
             options = PipelineOptions(
                 generate=1,
                 generate_random_attitudes=True,
